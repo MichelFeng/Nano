@@ -977,7 +977,7 @@ final class IslandViewModel: ObservableObject {
             if onboardingIsland.isCard { onOnboardingHover?() }
             return
         }
-        guard !settings.clickToOpen else { return }
+        guard !settings.clickToOpen || settings.autoHide else { return }
         // A HUD is the thing the user is looking at. Hovering it must not
         // blow it open into the dashboard.
         guard phase == .idleCompact else { return }

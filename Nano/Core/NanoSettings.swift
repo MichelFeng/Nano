@@ -322,6 +322,7 @@ final class NanoSettings: ObservableObject {
     private enum Key {
         static let placement = "island.placement"
         static let clickToOpen = "island.clickToOpen"
+        static let autoHide = "island.autoHide"
         static let appearance = "island.appearance"
         static let followActiveDisplay = "display.followActive"
         static let pinnedScreenID = "island.pinnedScreenID"
@@ -424,6 +425,10 @@ final class NanoSettings: ObservableObject {
     /// Off by default: hovering the drawn notch or island opens it.
     @Published var clickToOpen: Bool {
         didSet { defaults.set(clickToOpen, forKey: Key.clickToOpen) }
+    }
+
+    @Published var autoHide: Bool {
+        didSet { defaults.set(autoHide, forKey: Key.autoHide) }
     }
 
     @Published var appearance: IslandAppearance {
@@ -979,6 +984,7 @@ final class NanoSettings: ObservableObject {
             .flatMap(IslandPlacement.init(rawValue:))
             ?? (hasNotch ? .attached : .floating)
         clickToOpen = defaults.bool(forKey: Key.clickToOpen)
+        autoHide = defaults.bool(forKey: Key.autoHide)
         appearance = defaults.string(forKey: Key.appearance)
             .flatMap(IslandAppearance.init(rawValue:))
             ?? (hasNotch ? .solidBlack : .hybrid)

@@ -1151,6 +1151,29 @@ final class IslandStateTests: XCTestCase {
     }
 
     @MainActor
+    func testAutoHidePersistsAndAllowsHoverWithClickToOpenSaved() async {
+        let suiteName = "NanoTests.autoHide.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = NanoSettings(defaults: defaults)
+        XCTAssertFalse(settings.autoHide)
+
+        settings.clickToOpen = true
+        settings.autoHide = true
+        let reloaded = NanoSettings(defaults: defaults)
+        let viewModel = IslandViewModel(settings: reloaded)
+        viewModel.pointerEntered()
+        try? await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(viewModel.phase, .hoverDashboard)
+
+        viewModel.collapseIncludingPinned()
+        reloaded.autoHide = false
+        viewModel.pointerEntered()
+        try? await Task.sleep(for: .milliseconds(250))
+        XCTAssertEqual(viewModel.phase, .idleCompact)
+    }
+
+    @MainActor
     func testDashboardAndModuleSizesDoNotIncludeDetachedChrome() {
         let suiteName = "NanoTests.bottomChrome.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!

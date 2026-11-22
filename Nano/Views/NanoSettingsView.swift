@@ -69,7 +69,7 @@ enum SettingsDestination: String, CaseIterable, Identifiable {
     var keywords: [String] {
         switch self {
         case .general:
-            ["click to open", "hover", "display", "monitor", "features", "music", "calendar", "weather", "timer", "camera", "tray", "add-ons", "setup"]
+            ["click to open", "auto-hide", "hide the island", "hover", "display", "monitor", "features", "music", "calendar", "weather", "timer", "camera", "tray", "add-ons", "setup"]
         case .island:
             ["appearance", "surface", "solid black", "liquid glass", "hybrid", "color", "opacity", "shape", "notch", "floating", "gradient", "tint"]
         case .dashboard:
@@ -744,12 +744,21 @@ private struct GeneralSettingsPane: View {
                 LoginItemRow(loginItem: viewModel.loginItem)
                     .settingsAnchor("open.login")
                 SettingsToggleRow(
+                    "Automatically hide the island",
+                    subtitle: "It hides while idle. Move the pointer to the top center to open it.",
+                    isOn: $settings.autoHide
+                )
+                .settingsAnchor("open.autoHide")
+                SettingsToggleRow(
                     "Require a click to open",
-                    subtitle: settings.clickToOpen
+                    subtitle: settings.autoHide
+                        ? "Auto-hide uses hover. Use Pin island to keep the dashboard open."
+                        : settings.clickToOpen
                         ? "The dashboard stays closed until you click the island."
                         : "Hovering opens the island. A click keeps it open.",
                     isOn: $settings.clickToOpen
                 )
+                .disabled(settings.autoHide)
                 .settingsAnchor("open.click")
                 SettingsToggleRow(
                     "Follow the active display",

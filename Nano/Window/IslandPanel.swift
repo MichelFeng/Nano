@@ -642,7 +642,9 @@ final class IslandPanelController {
 
     func show() {
         reposition()
-        panel.orderFrontRegardless()
+        if !shouldHideIdleIsland {
+            panel.orderFrontRegardless()
+        }
     }
 
     private func observeChanges() {
@@ -656,8 +658,10 @@ final class IslandPanelController {
                 scheduleHoverPoll(after: phase == .idleCompact
                     ? NanoHoverCadence.active
                     : NanoHoverCadence.idle)
-                if phase == .hoverDashboard {
+                if settings.autoHide || phase == .hoverDashboard {
                     DispatchQueue.main.async {
+                        self.syncPanelVisibility()
+                        guard phase == .hoverDashboard, self.viewModel.phase == .hoverDashboard else { return }
                         self.isPointerInside = self.pointerIsOverIsland()
                         if !self.isPointerInside {
                             self.viewModel.pointerExited()
@@ -693,6 +697,15 @@ final class IslandPanelController {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.scheduleHitTargetUpdate()
+            }
+            .store(in: &cancellables)
+
+        settings.$autoHide
+            .dropFirst()
+            .sink { [weak self] _ in
+                DispatchQueue.main.async {
+                    self?.syncPanelVisibility()
+                }
             }
             .store(in: &cancellables)
 
@@ -809,6 +822,16 @@ final class IslandPanelController {
     private func pointerIsOverIsland() -> Bool {
         let mouse = NSEvent.mouseLocation
         let island = islandScreenRect
+        if settings.autoHide, viewModel.phase == .hoverDashboard || viewModel.phase == .dragTarget,
+           let screen = panel.screen {
+            let edge = autoHideRevealRect(on: screen)
+            // Keep the path between the top edge and a floating island open.
+            let bottom = min(edge.minY, island.maxY)
+            let bridge = CGRect(
+                x: edge.minX, y: bottom, width: edge.width, height: edge.maxY - bottom
+            )
+            if NSMouseInRect(mouse, bridge, false) { return true }
+        }
         if IslandHitGeometry.contains(
             mouse,
             in: island,
@@ -1050,8 +1073,19 @@ final class IslandPanelController {
 
     @discardableResult
     private func pollHover() -> TimeInterval {
-        guard panel.isVisible else { return NanoHoverCadence.hidden }
         let mouse = NSEvent.mouseLocation
+        if settings.autoHide {
+            syncPanelVisibility()
+            if !panel.isVisible {
+                let screen = targetScreen()
+                let overEdge = NSMouseInRect(mouse, autoHideRevealRect(on: screen), false)
+                noteButtonUp()
+                if overEdge, isDraggingHoldable() { viewModel.beginFileDrag() }
+                setPointerInside(overEdge)
+                return mouse.y >= screen.frame.maxY - 96 ? NanoHoverCadence.active : NanoHoverCadence.idle
+            }
+        }
+        guard panel.isVisible else { return NanoHoverCadence.hidden }
         let screen = panel.screen ?? targetScreen()
         let nearTop = mouse.y >= screen.frame.maxY - 96
         noteButtonUp()
@@ -1073,6 +1107,34 @@ final class IslandPanelController {
             nearTop: nearTop,
             pointerInside: isPointerInside
         )
+    }
+
+    private var shouldHideIdleIsland: Bool {
+        settings.autoHide
+            && viewModel.phase == .idleCompact
+            && viewModel.onboardingIsland == nil
+            && viewModel.voiceDictation.phase == .idle
+            && viewModel.mediaPeek == nil
+    }
+
+    private func syncPanelVisibility() {
+        if shouldHideIdleIsland, panel.isVisible {
+            setPointerInside(false)
+            panel.orderOut(nil)
+        } else if !shouldHideIdleIsland, !panel.isVisible {
+            show()
+        }
+    }
+
+    private func autoHideRevealRect(on screen: NSScreen) -> CGRect {
+        let width: CGFloat = 96
+        let height: CGFloat = 6
+        return CGRect(
+            x: (screen.frame.midX - width / 2).rounded(),
+            y: screen.frame.maxY - height,
+            width: width,
+            height: height
+        ).intersection(screen.frame)
     }
 
     private func installQuickCaptureObserver() {
@@ -1220,6 +1282,7 @@ final class IslandPanelController {
             guard let self else { return }
             hitTargetUpdateScheduled = false
             updateIslandHitTarget()
+            if settings.autoHide { syncPanelVisibility() }
         }
     }
 
