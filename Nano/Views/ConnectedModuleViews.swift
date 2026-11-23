@@ -1677,6 +1677,14 @@ struct MusicModuleView: View {
     @ObservedObject var settings: NanoSettings
 
     var body: some View {
+        if controller.preferredPlayer == .netease {
+            NetEaseTransportPanel(controller: controller, large: true)
+        } else {
+            trackContent
+        }
+    }
+
+    private var trackContent: some View {
         HStack(spacing: 20) {
             MediaArtwork(
                 controller: controller,
@@ -1792,6 +1800,167 @@ struct MusicModuleView: View {
 
 }
 
+struct NetEaseTransportPanel: View {
+    @ObservedObject var controller: MediaController
+    var large = false
+    var compact = false
+
+    private var track: MediaNowPlaying? {
+        guard let track = controller.nowPlaying, track.player == .netease else { return nil }
+        return track
+    }
+
+    private var playbackState: NetEasePlaybackState? {
+        if let track, track.duration > 0 { return track.isPlaying ? .playing : .paused }
+        return controller.neteasePlaybackState
+    }
+
+    var body: some View {
+        if compact {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    trackHeading
+                        .layoutPriority(1)
+                    if controller.neteaseAvailability == .available {
+                        controls
+                    } else {
+                        availabilityAction
+                    }
+                }
+                progress
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            VStack(alignment: .leading, spacing: large ? 12 : 6) {
+                HStack(spacing: 8) {
+                    trackHeading
+                    if let state = playbackState {
+                        Text(state == .playing ? "Playing" : "Paused")
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.55))
+                    }
+                }
+                progress
+                controls
+                    .frame(maxWidth: .infinity)
+                availabilityAction
+            }
+            .padding(large ? 14 : 8)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: large ? 18 : 11))
+        }
+    }
+
+    private var trackHeading: some View {
+        HStack(spacing: 8) {
+            MediaArtwork(
+                controller: controller,
+                size: compact ? 22 : (large ? 40 : 32),
+                cornerRadius: compact ? 7 : (large ? 12 : 9),
+                symbolSize: compact ? 10 : (large ? 15 : 12)
+            )
+
+            if let track {
+                VStack(alignment: .leading, spacing: compact ? 1 : 3) {
+                    NanoMarqueeText(
+                        text: track.title,
+                        fontSize: compact ? 10 : (large ? 15 : 12),
+                        height: compact ? 13 : (large ? 19 : 15),
+                        autoScrolls: large
+                    )
+                    if !track.artist.isEmpty {
+                        Text(track.artist)
+                            .font(.system(size: compact ? 9 : 10))
+                            .foregroundStyle(.white.opacity(0.5))
+                            .lineLimit(1)
+                    }
+                }
+            } else {
+                Text(MediaPlayerKind.netease.title)
+                    .font(.system(size: compact ? 10 : (large ? 15 : 12), weight: .semibold))
+                    .lineLimit(1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var progress: some View {
+        if let track, track.duration > 0 {
+            MediaProgressRow(
+                controller: controller,
+                barHeight: compact ? 3 : 4,
+                allowsSeeking: false
+            )
+            .font(.system(size: compact ? 8 : (large ? 12 : 10), weight: .medium))
+            .monospacedDigit()
+            .foregroundStyle(.white.opacity(0.55))
+        }
+    }
+
+    private var controls: some View {
+        HStack(spacing: compact ? 8 : (large ? 24 : 16)) {
+            Button { controller.sendNetEase(.previousTrack) } label: {
+                Image(systemName: "backward.fill")
+            }
+            .accessibilityLabel("Previous track")
+            Button { controller.sendNetEase(.playPause) } label: {
+                let symbol = Image(systemName: playbackState == .playing ? "pause.fill" : "play.fill")
+                if compact {
+                    symbol
+                } else {
+                    symbol
+                        .frame(width: large ? 40 : 28, height: large ? 40 : 28)
+                        .background(.white, in: Circle())
+                        .foregroundStyle(.black)
+                }
+            }
+            .accessibilityLabel(playbackState == .playing ? "Pause" : "Play")
+            Button { controller.sendNetEase(.nextTrack) } label: {
+                Image(systemName: "forward.fill")
+            }
+            .accessibilityLabel("Next track")
+        }
+        .disabled(controller.neteaseAvailability != .available)
+        .font(.system(size: compact ? 11 : (large ? 16 : 12)))
+        .buttonStyle(.nanoPress)
+    }
+
+    @ViewBuilder
+    private var availabilityAction: some View {
+        switch controller.neteaseAvailability {
+        case .notInstalled:
+            Text("\(MediaPlayerKind.netease.title) is not installed.")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.white.opacity(0.5))
+        case .notRunning:
+            openPlayerButton
+                .font(.system(size: 10, weight: .medium))
+                .buttonStyle(.nanoPress)
+        case .accessibilityRequired:
+            Button("Allow Accessibility Access") { controller.requestNetEaseAccessibility() }
+                .font(.system(size: 10, weight: .medium))
+                .buttonStyle(.nanoPress)
+                .task { await controller.refreshWhenNetEaseAccessibilityIsGranted() }
+        case .unsupportedCommands:
+            HStack(spacing: 6) {
+                Text("Playback menu unavailable")
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.orange.opacity(0.8))
+                openPlayerButton
+                    .font(.system(size: 9, weight: .medium))
+                    .buttonStyle(.nanoPress)
+            }
+        case .available:
+            EmptyView()
+        }
+    }
+
+    private var openPlayerButton: some View {
+        Button("Open \(MediaPlayerKind.netease.title)") { controller.open(.netease) }
+    }
+}
+
 struct BatteryModuleView: View {
     @ObservedObject var service: SystemStatusService
 
@@ -1890,14 +2059,14 @@ struct VolumeModuleView: View {
     }
 }
 
-/// Elapsed time, the seek bar and time remaining. While a track plays the
-/// labels tick every second from the controller's last sample; nothing asks
-/// the player for it. Dragging the bar previews the time and seeks on release.
+/// Elapsed time, progress and time remaining. The labels update between
+/// player samples. When seeking is enabled, dragging previews the target.
 struct MediaProgressRow: View {
     @ObservedObject var controller: MediaController
     var spacing: CGFloat = 9
     var barHeight: CGFloat = 4
     var showsTimes = true
+    var allowsSeeking = true
 
     @State private var scrub: Double?
 
@@ -1920,7 +2089,7 @@ struct MediaProgressRow: View {
             MediaScrubBar(
                 value: fraction,
                 height: barHeight,
-                isEnabled: duration > 0,
+                isEnabled: allowsSeeking && duration > 0,
                 scrub: $scrub
             ) { fraction in
                 controller.seek(to: fraction * duration)
@@ -1938,14 +2107,13 @@ struct MediaProgressRow: View {
     }
 }
 
-/// Ticks once a second while the track plays, on the instants its displayed
-/// second changes. A paused or missing track gets a single entry, so an idle
-/// player costs nothing.
+/// Updates when the displayed playback second changes. Paused and missing
+/// tracks get a single entry.
 private struct MediaClockSchedule: TimelineSchedule {
     let track: MediaNowPlaying?
 
     func entries(from startDate: Date, mode: TimelineScheduleMode) -> AnyIterator<Date> {
-        guard let track, track.isPlaying else {
+        guard let track, track.isPlaying, track.playbackRate > 0 else {
             var pending: Date? = startDate
             return AnyIterator {
                 defer { pending = nil }
@@ -1953,9 +2121,10 @@ private struct MediaClockSchedule: TimelineSchedule {
             }
         }
         let fraction = track.position - track.position.rounded(.down)
-        let anchor = track.sampledAt.addingTimeInterval(1 - fraction + 0.01)
+        let interval = 1 / track.playbackRate
+        let anchor = track.sampledAt.addingTimeInterval((1 - fraction + 0.01) * interval)
         return AnyIterator(
-            PeriodicTimelineSchedule(from: anchor, by: 1)
+            PeriodicTimelineSchedule(from: anchor, by: interval)
                 .entries(from: startDate, mode: mode)
                 .makeIterator()
         )
@@ -1973,7 +2142,22 @@ struct MediaScrubBar: View {
 
     @State private var isHovering = false
 
+    @ViewBuilder
     var body: some View {
+        if isEnabled {
+            bar.accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: onSeek(min(value + 0.05, 1))
+                case .decrement: onSeek(max(value - 0.05, 0))
+                @unknown default: break
+                }
+            }
+        } else {
+            bar
+        }
+    }
+
+    private var bar: some View {
         GeometryReader { proxy in
             let width = max(proxy.size.width, 1)
             let fraction = min(max(value, 0), 1)
@@ -2005,7 +2189,8 @@ struct MediaScrubBar: View {
                         guard isEnabled else { return }
                         onSeek(min(max(drag.location.x / width, 0), 1))
                         scrub = nil
-                    }
+                    },
+                including: isEnabled ? .all : .none
             )
             .onHover { isHovering = $0 }
         }
@@ -2015,14 +2200,6 @@ struct MediaScrubBar: View {
         .accessibilityElement()
         .accessibilityLabel("Playback position")
         .accessibilityValue("\(Int((value * 100).rounded())) percent")
-        .accessibilityAdjustableAction { direction in
-            guard isEnabled else { return }
-            switch direction {
-            case .increment: onSeek(min(value + 0.05, 1))
-            case .decrement: onSeek(max(value - 0.05, 0))
-            @unknown default: break
-            }
-        }
     }
 }
 
@@ -2171,6 +2348,7 @@ extension MediaPlayerKind {
         switch self {
         case .appleMusic: Color(red: 0.98, green: 0.19, blue: 0.35)
         case .spotify: Color(red: 0.11, green: 0.73, blue: 0.33)
+        case .netease: Color(red: 0.91, green: 0.25, blue: 0.28)
         }
     }
 }

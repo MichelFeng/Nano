@@ -794,6 +794,76 @@ final class IslandStateTests: XCTestCase {
             player: .spotify
         ))
         XCTAssertNil(MediaController.parseNowPlaying("garbage", player: .appleMusic))
+        XCTAssertNil(MediaController.parseNowPlaying(
+            "Song\u{001F}Artist\u{001F}playing\u{001F}12.25\u{001F}180.5",
+            player: .netease
+        ))
+    }
+
+    func testNetEaseMetadataUsesTheSourceTimestampAndPlaybackRate() throws {
+        let now = Date(timeIntervalSince1970: 1_010)
+        let data = Data(#"""
+        {
+            "bundleID": "com.netease.163music",
+            "title": "一首 \"歌\"",
+            "artist": "歌手",
+            "position": 8.5,
+            "duration": 40,
+            "rate": 1.5,
+            "sampledAt": 1000,
+            "artworkIdentifier": "netease-artwork-42"
+        }
+        """#.utf8)
+        let snapshot = try XCTUnwrap(NetEaseNowPlayingReader.parse(data, at: now))
+        let track = snapshot.track
+        XCTAssertEqual(snapshot.artworkIdentifier, "netease-artwork-42")
+        XCTAssertEqual(track.player, .netease)
+        XCTAssertEqual(track.title, "一首 \"歌\"")
+        XCTAssertEqual(track.artist, "歌手")
+        XCTAssertTrue(track.isPlaying)
+        XCTAssertEqual(track.position(at: now), 23.5, accuracy: 0.001)
+        XCTAssertEqual(track.progress(at: now), 23.5 / 40, accuracy: 0.001)
+        XCTAssertEqual(track.position(at: now.addingTimeInterval(30)), 40)
+    }
+
+    func testNetEasePausedPositionAcceptsCorrectionsAndStaysFrozen() throws {
+        let now = Date(timeIntervalSince1970: 1_010)
+        let initial = Data(#"{"bundleID":"com.netease.163music","title":"Song","position":8.5,"duration":40,"rate":0,"sampledAt":1000}"#.utf8)
+        let settled = Data(#"{"bundleID":"com.netease.163music","title":"Song","position":8.9,"duration":40,"rate":0,"sampledAt":1001}"#.utf8)
+        let first = try XCTUnwrap(NetEaseNowPlayingReader.parse(initial, at: now)).track
+        let corrected = try XCTUnwrap(NetEaseNowPlayingReader.parse(settled, at: now)).track
+        XCTAssertFalse(corrected.isPlaying)
+        XCTAssertFalse(first.isContinued(by: corrected))
+        XCTAssertEqual(corrected.position(at: now), 8.9, accuracy: 0.001)
+        XCTAssertEqual(corrected.position(at: now.addingTimeInterval(30)), 8.9, accuracy: 0.001)
+    }
+
+    func testNetEaseMetadataRejectsOtherSourcesAndKeepsTitleWithoutTiming() throws {
+        let otherPlayer = Data(#"{"bundleID":"com.apple.Music","title":"Another song"}"#.utf8)
+        XCTAssertNil(NetEaseNowPlayingReader.parse(otherPlayer))
+        let missingTitle = Data(#"{"bundleID":"com.netease.163music","title":" "}"#.utf8)
+        XCTAssertNil(NetEaseNowPlayingReader.parse(missingTitle))
+
+        let incomplete = Data(#"{"bundleID":"com.netease.163music","title":"Song","artist":"Artist"}"#.utf8)
+        let track = try XCTUnwrap(NetEaseNowPlayingReader.parse(incomplete)).track
+        XCTAssertEqual(track.title, "Song")
+        XCTAssertEqual(track.artist, "Artist")
+        XCTAssertEqual(track.duration, 0)
+
+        let oversizedArtworkID = String(repeating: "x", count: 257)
+        let metadataWithOversizedArtworkID = Data(
+            #"{"bundleID":"com.netease.163music","title":"Song","artworkIdentifier":"\#(oversizedArtworkID)"}"#.utf8
+        )
+        let snapshot = try XCTUnwrap(NetEaseNowPlayingReader.parse(metadataWithOversizedArtworkID))
+        XCTAssertEqual(snapshot.track.title, "Song")
+        XCTAssertNil(snapshot.artworkIdentifier)
+
+        let shortTrack = Data(#"""
+        {"bundleID":"com.netease.163music","title":"Song","artist":"Artist","position":0,"duration":0.5,"rate":0,"sampledAt":1000}
+        """#.utf8)
+        let withTiming = try XCTUnwrap(NetEaseNowPlayingReader.parse(shortTrack)).track
+        XCTAssertEqual(withTiming.duration, 0.5)
+        XCTAssertFalse(withTiming.isContinued(by: track))
     }
 
     func testCalendarCacheExpiresOnTTLDayBoundaryAndStoreChanges() {

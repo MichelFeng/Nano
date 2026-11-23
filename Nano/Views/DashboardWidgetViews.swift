@@ -426,10 +426,14 @@ struct DashboardMusicWidget: View {
     let slot: DashboardSlot
 
     var body: some View {
-        switch slot {
-        case .wide: DashboardMusicView(controller: controller, openModule: {})
-        case .strip: strip
-        default: medium
+        if controller.preferredPlayer == .netease {
+            NetEaseTransportPanel(controller: controller, compact: slot == .strip)
+        } else {
+            switch slot {
+            case .wide: DashboardMusicView(controller: controller, openModule: {})
+            case .strip: strip
+            default: medium
+            }
         }
     }
 

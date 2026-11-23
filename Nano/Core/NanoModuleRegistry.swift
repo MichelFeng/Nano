@@ -159,7 +159,7 @@ enum NanoModuleRegistry {
 
     private static func description(for id: NanoModuleID) -> String {
         switch id {
-        case .music: "Control Apple Music or Spotify from Nano."
+        case .music: "Control Apple Music, Spotify, or NetEase Cloud Music from Nano."
         case .weather: "See current conditions and your local forecast."
         case .agents: "See coding agents at work, and answer them from the island."
         case .tray: "Hold files, links, and images until you drag them out, or AirDrop them."

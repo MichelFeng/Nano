@@ -731,6 +731,11 @@ final class IslandViewModel: ObservableObject {
                     await Task.yield()
                     self?.syncFeatureMonitoring()
                     self?.startNotificationMonitoring()
+                    if self?.settings.preferredMediaPlayer == .netease {
+                        self?.mediaPeekTask?.cancel()
+                        self?.mediaPeekTask = nil
+                        self?.mediaPeek = nil
+                    }
                     self?.objectWillChange.send()
                 }
             }
@@ -766,6 +771,12 @@ final class IslandViewModel: ObservableObject {
 
     private func mediaTrackDidChange(_ track: MediaNowPlaying?) {
         updatePausedMusicHold(track)
+        if mediaController.preferredPlayer == .netease {
+            mediaPeekTask?.cancel()
+            mediaPeekTask = nil
+            mediaPeek = nil
+            return
+        }
         guard let track, track.isPlaying else { return }
         let isNewSong = track.trackID != lastAnnouncedTrackID
         lastAnnouncedTrackID = track.trackID

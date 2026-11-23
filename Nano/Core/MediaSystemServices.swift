@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import CoreAudio
 import Foundation
 import IOKit.ps
@@ -6,6 +7,9 @@ import IOKit.ps
 enum MediaPlayerKind: String, CaseIterable, Identifiable, Codable, Sendable {
     case appleMusic
     case spotify
+    case netease
+
+    static let automaticCandidates: [MediaPlayerKind] = [.appleMusic, .spotify]
 
     var id: String { rawValue }
 
@@ -13,6 +17,7 @@ enum MediaPlayerKind: String, CaseIterable, Identifiable, Codable, Sendable {
         switch self {
         case .appleMusic: "Apple Music"
         case .spotify: "Spotify"
+        case .netease: "NetEase Cloud Music"
         }
     }
 
@@ -20,7 +25,174 @@ enum MediaPlayerKind: String, CaseIterable, Identifiable, Codable, Sendable {
         switch self {
         case .appleMusic: "com.apple.Music"
         case .spotify: "com.spotify.client"
+        case .netease: "com.netease.163music"
         }
+    }
+}
+
+enum NetEaseControlAvailability: Equatable, Sendable {
+    case notInstalled
+    case notRunning
+    case accessibilityRequired
+    case unsupportedCommands
+    case available
+}
+
+enum NetEasePlaybackState: Equatable, Sendable {
+    case playing
+    case paused
+}
+
+enum NetEaseTransportCommand: Sendable {
+    case playPause
+    case previousTrack
+    case nextTrack
+}
+
+/// The verified NetEase menu is the only control surface used here. The app
+/// stays in the background; its menu commands share an identifier, so labels
+/// are matched exactly at the AX boundary.
+private enum NetEaseAccessibility {
+    private static let bundleIdentifier = "com.netease.163music"
+    private static let timeout: Float = 0.8
+
+    private struct CommandLabels: Sendable {
+        let play: String
+        let pause: String
+        let previous: String
+        let next: String
+    }
+
+    private static let labelsByMenuTitle: [String: CommandLabels] = [
+        "Controls": CommandLabels(play: "Play", pause: "Pause", previous: "Previous", next: "Next"),
+        "控制": CommandLabels(play: "播放", pause: "暂停", previous: "上一个", next: "下一个"),
+    ]
+
+    enum Result: Sendable {
+        case state(NetEasePlaybackState)
+        case commandSent(pid_t)
+        case failure(NetEaseControlAvailability)
+    }
+
+    static func readState() -> Result {
+        guard NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) != nil else {
+            return .failure(.notInstalled)
+        }
+        guard let app = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == bundleIdentifier && $0.processIdentifier > 0
+        }) else { return .failure(.notRunning) }
+        guard AXIsProcessTrusted() else { return .failure(.accessibilityRequired) }
+        return readState(pid: app.processIdentifier)
+    }
+
+    static func readState(pid: pid_t) -> Result {
+        guard NSWorkspace.shared.runningApplications.contains(where: {
+            $0.bundleIdentifier == bundleIdentifier && $0.processIdentifier == pid
+        }) else { return .failure(.notRunning) }
+        guard let (labels, children) = controlMenu(pid: pid) else {
+            return .failure(.unsupportedCommands)
+        }
+        let titles = children
+            .filter { role(of: $0) == kAXMenuItemRole as String }
+            .compactMap(title(of:))
+        let canPause = titles.filter { $0 == labels.pause }.count == 1
+        let canPlay = titles.filter { $0 == labels.play }.count == 1
+        if canPause && !canPlay { return .state(.playing) }
+        if canPlay && !canPause { return .state(.paused) }
+        return .failure(.unsupportedCommands)
+    }
+
+    static func perform(_ command: NetEaseTransportCommand) -> Result {
+        guard NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) != nil else {
+            return .failure(.notInstalled)
+        }
+        guard let app = NSWorkspace.shared.runningApplications.first(where: {
+            $0.bundleIdentifier == bundleIdentifier && $0.processIdentifier > 0
+        }) else { return .failure(.notRunning) }
+        guard AXIsProcessTrusted() else { return .failure(.accessibilityRequired) }
+        guard let (labels, children) = controlMenu(pid: app.processIdentifier) else {
+            return .failure(.unsupportedCommands)
+        }
+        let commandTitle: String
+        switch command {
+        case .playPause:
+            let titles = children.compactMap(title(of:))
+            if titles.contains(labels.pause) { commandTitle = labels.pause }
+            else if titles.contains(labels.play) { commandTitle = labels.play }
+            else { return .failure(.unsupportedCommands) }
+        case .previousTrack: commandTitle = labels.previous
+        case .nextTrack: commandTitle = labels.next
+        }
+        let matches = children.filter { role(of: $0) == kAXMenuItemRole as String && title(of: $0) == commandTitle }
+        guard matches.count == 1,
+              let item = matches.first,
+              AXUIElementSetMessagingTimeout(item, timeout) == .success,
+              AXUIElementPerformAction(item, kAXPressAction as CFString) == .success
+        else { return .failure(.unsupportedCommands) }
+        return .commandSent(app.processIdentifier)
+    }
+
+    private static func controlMenu(pid: pid_t) -> (labels: CommandLabels, children: [AXUIElement])? {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, timeout)
+        guard let menuBar = element(app, attribute: kAXMenuBarAttribute as CFString),
+              role(of: menuBar) == kAXMenuBarRole as String,
+              let menus = childArray(menuBar, attribute: kAXChildrenAttribute as CFString)
+        else { return nil }
+        let controls = menus.compactMap { item -> (item: AXUIElement, labels: CommandLabels)? in
+            guard role(of: item) == kAXMenuBarItemRole as String,
+                  let menuTitle = title(of: item),
+                  let labels = labelsByMenuTitle[menuTitle]
+            else { return nil }
+            return (item, labels)
+        }
+        guard controls.count == 1,
+              let control = controls.first,
+              let controlChildren = childArray(control.item, attribute: kAXChildrenAttribute as CFString)
+        else { return nil }
+        let controlMenus = controlChildren.filter { role(of: $0) == kAXMenuRole as String }
+        guard controlMenus.count == 1,
+              let menu = controlMenus.first,
+              role(of: menu) == kAXMenuRole as String,
+              let children = childArray(menu, attribute: kAXChildrenAttribute as CFString)
+        else { return nil }
+        return (control.labels, children)
+    }
+
+    private static func childArray(_ element: AXUIElement, attribute: CFString) -> [AXUIElement]? {
+        var value: CFTypeRef?
+        guard AXUIElementSetMessagingTimeout(element, timeout) == .success,
+              AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+              let value = value as? [AXUIElement]
+        else { return nil }
+        return value
+    }
+
+    private static func element(_ element: AXUIElement, attribute: CFString) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementSetMessagingTimeout(element, timeout) == .success,
+              AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID()
+        else { return nil }
+        return (value as! AXUIElement)
+    }
+
+    private static func title(of element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementSetMessagingTimeout(element, timeout) == .success,
+              AXUIElementCopyAttributeValue(element, kAXTitleAttribute as CFString, &value) == .success else {
+            return nil
+        }
+        return value as? String
+    }
+
+    private static func role(of element: AXUIElement) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementSetMessagingTimeout(element, timeout) == .success,
+              AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &value) == .success else {
+            return nil
+        }
+        return value as? String
     }
 }
 
@@ -34,11 +206,12 @@ struct MediaNowPlaying: Equatable, Sendable {
     let position: TimeInterval
     let duration: TimeInterval
     var sampledAt: Date = .now
+    var playbackRate: Double = 1
 
     func position(at date: Date) -> TimeInterval {
         var value = position
         if isPlaying {
-            value += max(date.timeIntervalSince(sampledAt), 0)
+            value += max(date.timeIntervalSince(sampledAt), 0) * playbackRate
         }
         if duration > 0 {
             value = min(value, duration)
@@ -58,10 +231,14 @@ struct MediaNowPlaying: Equatable, Sendable {
     /// A new sample that agrees with the clock already running says nothing
     /// new. Publishing it would redraw every view showing the track.
     func isContinued(by sample: MediaNowPlaying) -> Bool {
-        trackID == sample.trackID
+        let isNetEase = player == .netease
+        let durationMatches = isNetEase ? duration == sample.duration : abs(duration - sample.duration) < 1
+        let positionTolerance: TimeInterval = isNetEase && !isPlaying ? 0.001 : 1.5
+        return trackID == sample.trackID
             && isPlaying == sample.isPlaying
-            && abs(duration - sample.duration) < 1
-            && abs(position(at: sample.sampledAt) - sample.position) < 1.5
+            && playbackRate == sample.playbackRate
+            && durationMatches
+            && abs(position(at: sample.sampledAt) - sample.position) < positionTolerance
     }
 
     func with(isPlaying: Bool? = nil, position: TimeInterval? = nil, at date: Date = .now) -> MediaNowPlaying {
@@ -72,7 +249,8 @@ struct MediaNowPlaying: Equatable, Sendable {
             isPlaying: isPlaying ?? self.isPlaying,
             position: position ?? self.position(at: date),
             duration: duration,
-            sampledAt: date
+            sampledAt: date,
+            playbackRate: playbackRate
         )
     }
 }
@@ -161,11 +339,20 @@ final class MediaController: ObservableObject {
     @Published private(set) var errorMessage: String?
     @Published var preferredPlayer: MediaPlayerKind? {
         didSet {
-            guard preferredPlayer != oldValue, isObserving else { return }
+            guard preferredPlayer != oldValue else { return }
+            if oldValue == .netease {
+                stopNetEaseMetadata()
+            }
+            guard isObserving else { return }
+            if preferredPlayer == .netease || oldValue == .netease {
+                setError(nil)
+            }
             refresh()
         }
     }
     @Published private(set) var artwork: NSImage?
+    @Published private(set) var neteaseAvailability: NetEaseControlAvailability = .notRunning
+    @Published private(set) var neteasePlaybackState: NetEasePlaybackState?
 
     /// Set while macOS refuses Nano's Apple events to a player, which reads
     /// as "nothing playing" until Automation is allowed.
@@ -189,6 +376,8 @@ final class MediaController: ObservableObject {
     private var pollTimer: Timer?
     private var workspaceObservers: [NSObjectProtocol] = []
     private var playerRelay: MediaPlayerNotificationRelay?
+    private var netEaseMetadataSource: NSRunningApplication?
+    private var netEaseMetadataTask: Task<Void, Never>?
     /// The player that most recently started playing. With no preference set,
     /// it is asked first, so a paused player never hides one that is playing.
     private var lastActivePlayer: MediaPlayerKind?
@@ -205,6 +394,10 @@ final class MediaController: ObservableObject {
     /// the island with it.
     private nonisolated static let scriptQueue = DispatchQueue(
         label: "com.nanoapp.Nano.media-scripts",
+        qos: .userInitiated
+    )
+    private nonisolated static let netEaseQueue = DispatchQueue(
+        label: "com.nanoapp.Nano.netease-accessibility",
         qos: .userInitiated
     )
 
@@ -232,6 +425,7 @@ final class MediaController: ObservableObject {
         pollTimer?.invalidate()
         pollTimer = nil
         readGeneration += 1
+        stopNetEaseMetadata()
         let center = NSWorkspace.shared.notificationCenter
         workspaceObservers.forEach(center.removeObserver)
         workspaceObservers.removeAll()
@@ -249,10 +443,16 @@ final class MediaController: ObservableObject {
         pollTimer?.invalidate()
         pollTimer = nil
 
+        if preferredPlayer == .netease {
+            refreshNetEase()
+            return
+        }
+        stopNetEaseMetadata()
+
         let runningBundleIDs = Set(
             NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)
         )
-        let players = MediaPlayerKind.allCases.filter {
+        let players = MediaPlayerKind.automaticCandidates.filter {
             runningBundleIDs.contains($0.bundleIdentifier)
         }
         if availablePlayers != players {
@@ -274,6 +474,132 @@ final class MediaController: ObservableObject {
         }
     }
 
+    private func refreshNetEase() {
+        readGeneration += 1
+        let generation = readGeneration
+        if let track = nowPlaying, track.player != .netease {
+            setNowPlaying(nil)
+        }
+        if artworkKey?.hasPrefix("neteaseArtwork:") != true {
+            clearArtwork()
+        }
+        let players = MediaPlayerKind.automaticCandidates.filter { player in
+            NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == player.bundleIdentifier }
+        }
+        if availablePlayers != players { availablePlayers = players }
+
+        startNetEaseMetadataIfNeeded()
+        Task { [weak self] in
+            let result = await Self.onNetEaseQueue { NetEaseAccessibility.readState() }
+            guard let self, generation == self.readGeneration, preferredPlayer == .netease else { return }
+            applyNetEase(result)
+        }
+    }
+
+    private func startNetEaseMetadataIfNeeded() {
+        guard let app = NSRunningApplication.runningApplications(
+            withBundleIdentifier: MediaPlayerKind.netease.bundleIdentifier
+        ).first(where: { !$0.isTerminated && $0.processIdentifier > 0 }) else {
+            stopNetEaseMetadata()
+            return
+        }
+        if let source = netEaseMetadataSource, !source.isTerminated,
+           source.processIdentifier == app.processIdentifier { return }
+
+        stopNetEaseMetadata()
+        netEaseMetadataSource = app
+        netEaseMetadataTask = Task { [weak self] in
+            while !Task.isCancelled && self?.preferredPlayer == .netease {
+                let snapshot = await NetEaseNowPlayingReader.read()
+                guard !Task.isCancelled, self?.preferredPlayer == .netease else { return }
+                guard !app.isTerminated else {
+                    self?.stopNetEaseMetadata()
+                    return
+                }
+                if let snapshot {
+                    self?.setNowPlaying(snapshot.track)
+                    self?.updateNetEaseArtwork(snapshot)
+                } else {
+                    self?.setNowPlaying(nil)
+                    self?.clearArtwork()
+                }
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+
+    private func stopNetEaseMetadata() {
+        netEaseMetadataTask?.cancel()
+        netEaseMetadataTask = nil
+        netEaseMetadataSource = nil
+        if nowPlaying?.player == .netease {
+            setNowPlaying(nil)
+        }
+        if artworkKey?.hasPrefix("neteaseArtwork:") == true {
+            clearArtwork()
+        }
+    }
+
+    private func applyNetEase(_ result: NetEaseAccessibility.Result) {
+        switch result {
+        case let .state(state):
+            neteaseAvailability = .available
+            neteasePlaybackState = state
+            setError(nil)
+        case .commandSent:
+            break
+        case let .failure(availability):
+            neteaseAvailability = availability
+            neteasePlaybackState = nil
+            switch availability {
+            case .notInstalled: setError("\(MediaPlayerKind.netease.title) is not installed.")
+            case .notRunning: setError(nil)
+            case .accessibilityRequired:
+                setError("Allow Accessibility access for Nano to control \(MediaPlayerKind.netease.title).")
+            case .unsupportedCommands:
+                setError("The \(MediaPlayerKind.netease.title) playback menu is unavailable.")
+            case .available: setError(nil)
+            }
+        }
+        scheduleNextRefresh()
+    }
+
+    func requestNetEaseAccessibility() {
+        guard preferredPlayer == .netease else { return }
+        if !NanoAccessibilityPermission.requestIfNeeded() {
+            NanoPrivacySettings.open(NanoPermissionKind.accessibility.settingsAnchor)
+        }
+        refresh()
+    }
+
+    func refreshWhenNetEaseAccessibilityIsGranted() async {
+        while !Task.isCancelled, preferredPlayer == .netease, neteaseAvailability == .accessibilityRequired {
+            if NanoAccessibilityPermission.isTrusted {
+                refresh()
+                return
+            }
+            try? await Task.sleep(for: .seconds(1))
+        }
+    }
+
+    func sendNetEase(_ command: NetEaseTransportCommand) {
+        guard preferredPlayer == .netease else { return }
+        readGeneration += 1
+        let generation = readGeneration
+        Task { [weak self] in
+            let result = await Self.onNetEaseQueue { NetEaseAccessibility.perform(command) }
+            guard let self, generation == self.readGeneration, preferredPlayer == .netease else { return }
+            if case let .commandSent(pid) = result {
+                try? await Task.sleep(for: .milliseconds(250))
+                let readback = await Self.onNetEaseQueue { NetEaseAccessibility.readState(pid: pid) }
+                guard generation == self.readGeneration, preferredPlayer == .netease else { return }
+                applyNetEase(readback)
+            } else {
+                applyNetEase(result)
+            }
+        }
+    }
+
     /// Notifications carry changes; polling only corrects drift in the
     /// interpolated clock and catches anything a player failed to announce.
     nonisolated static func pollingInterval(
@@ -285,6 +611,7 @@ final class MediaController: ObservableObject {
     }
 
     private func readOrder(running: [MediaPlayerKind]) -> [MediaPlayerKind] {
+        let running = running.filter { MediaPlayerKind.automaticCandidates.contains($0) }
         if let preferredPlayer, running.contains(preferredPlayer) {
             return [preferredPlayer]
         }
@@ -320,8 +647,10 @@ final class MediaController: ObservableObject {
     private func scheduleNextRefresh() {
         pollTimer?.invalidate()
         guard let interval = Self.pollingInterval(
-            hasRunningPlayer: !availablePlayers.isEmpty,
-            isPlaying: nowPlaying?.isPlaying == true
+            hasRunningPlayer: preferredPlayer == .netease
+                ? neteaseAvailability != .notRunning && neteaseAvailability != .notInstalled
+                : !availablePlayers.isEmpty,
+            isPlaying: preferredPlayer != .netease && nowPlaying?.isPlaying == true
         ) else { return }
 
         let timer = Timer(timeInterval: interval, repeats: false) { [weak self] _ in
@@ -348,7 +677,12 @@ final class MediaController: ObservableObject {
                               $0.bundleIdentifier == bundleIdentifier
                           })
                     else { return }
-                    Task { @MainActor in self?.refresh() }
+                    Task { @MainActor in
+                        guard bundleIdentifier != MediaPlayerKind.netease.bundleIdentifier
+                                || self?.preferredPlayer == .netease
+                        else { return }
+                        self?.refresh()
+                    }
                 }
             )
         }
@@ -407,6 +741,50 @@ final class MediaController: ObservableObject {
                 self.saveLastPlayedArtwork(image == nil ? nil : data)
             }
         }
+    }
+
+    private func updateNetEaseArtwork(_ snapshot: NetEaseNowPlayingSnapshot) {
+        guard let identifier = snapshot.artworkIdentifier else {
+            clearArtwork()
+            return
+        }
+
+        let key = "neteaseArtwork:\(identifier)"
+        guard key != artworkKey else { return }
+        artworkTask?.cancel()
+        artworkTask = nil
+        artworkKey = key
+        if artworkRetriedKey != key {
+            artworkRetriedKey = nil
+        }
+        artwork = nil
+
+        artworkTask = Task { [weak self] in
+            let data = await NetEaseNowPlayingReader.artworkData(identifier: identifier)
+            guard !Task.isCancelled,
+                  let self,
+                  self.preferredPlayer == .netease,
+                  self.nowPlaying?.player == .netease,
+                  self.artworkKey == key
+            else { return }
+
+            let image = data.flatMap(NSImage.init(data:))
+            self.artwork = image
+            self.artworkTask = nil
+            if image == nil, self.artworkRetriedKey != key {
+                self.artworkRetriedKey = key
+                self.artworkKey = nil
+            }
+        }
+    }
+
+    private func clearArtwork() {
+        guard artworkKey != nil || artworkTask != nil || artwork != nil else { return }
+        artworkTask?.cancel()
+        artworkTask = nil
+        artworkKey = nil
+        artworkRetriedKey = nil
+        artwork = nil
     }
 
     // MARK: Last played
@@ -475,6 +853,7 @@ final class MediaController: ObservableObject {
     /// and one that has only just launched can drop the first `play`, so a
     /// second follows when nothing started.
     func resumeLastPlayed() {
+        guard preferredPlayer != .netease else { return }
         guard let player = lastPlayed?.player else { return }
         lastActivePlayer = player
         let source = "tell application \"\(player.applicationName)\" to play"
@@ -492,11 +871,12 @@ final class MediaController: ObservableObject {
     /// Where "Open …" points before any song has played: the preferred player
     /// when it is installed, otherwise the first one that is.
     var suggestedPlayer: MediaPlayerKind? {
-        let installed = MediaPlayerKind.allCases.filter {
+        let candidates = preferredPlayer == .netease ? [MediaPlayerKind.netease] : MediaPlayerKind.automaticCandidates
+        let installed = candidates.filter {
             NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0.bundleIdentifier) != nil
         }
         if let preferredPlayer, installed.contains(preferredPlayer) { return preferredPlayer }
-        return installed.first { $0 == .spotify } ?? installed.first
+        return installed.first { $0 == .spotify } ?? installed.first { $0 != .netease } ?? installed.first
     }
 
     /// The player's own cover first. Music has none for many streamed and
@@ -527,6 +907,8 @@ final class MediaController: ObservableObject {
                 }
                 return FileManager.default.contents(atPath: path)
             }
+        case .netease:
+            return nil
         }
     }
 
@@ -595,6 +977,10 @@ final class MediaController: ObservableObject {
 
     /// Flips at once; the player's own notification confirms it a moment later.
     func playPause() {
+        if preferredPlayer == .netease {
+            sendNetEase(.playPause)
+            return
+        }
         if let track = nowPlaying {
             nowPlaying = track.with(isPlaying: !track.isPlaying)
         }
@@ -602,16 +988,25 @@ final class MediaController: ObservableObject {
     }
 
     func nextTrack() {
+        if preferredPlayer == .netease {
+            sendNetEase(.nextTrack)
+            return
+        }
         send("next track")
     }
 
     /// Music's `back track` is its own button and media key: restart the song
     /// a few seconds in, otherwise go back. Its `previous track` always skips.
     func previousTrack() {
+        if preferredPlayer == .netease {
+            sendNetEase(.previousTrack)
+            return
+        }
         send(commandTarget == .appleMusic ? "back track" : "previous track")
     }
 
     func seek(to position: TimeInterval) {
+        guard preferredPlayer != .netease else { return }
         guard let track = nowPlaying else { return }
         let target = track.duration > 0 ? min(max(position, 0), track.duration) : max(position, 0)
         nowPlaying = track.with(position: target)
@@ -620,6 +1015,10 @@ final class MediaController: ObservableObject {
     }
 
     func openPlayer() {
+        if preferredPlayer == .netease {
+            open(.netease)
+            return
+        }
         guard let player = commandTarget else { return }
         open(player)
     }
@@ -696,6 +1095,7 @@ final class MediaController: ObservableObject {
         player: MediaPlayerKind,
         at date: Date = .now
     ) -> MediaNowPlaying? {
+        guard MediaPlayerKind.automaticCandidates.contains(player) else { return nil }
         let parts = value.components(separatedBy: "\u{001F}")
         guard parts.count >= 5, parts[2] != "stopped" else { return nil }
         let rawDuration = number(parts[4])
@@ -749,6 +1149,8 @@ final class MediaController: ObservableObject {
                 end try
             end tell
             """
+        case .netease:
+            return ""
         }
     }
 
@@ -757,6 +1159,14 @@ final class MediaController: ObservableObject {
     ) async -> T {
         await withCheckedContinuation { continuation in
             scriptQueue.async { continuation.resume(returning: work()) }
+        }
+    }
+
+    private nonisolated static func onNetEaseQueue<T: Sendable>(
+        _ work: @escaping @Sendable () -> T
+    ) async -> T {
+        await withCheckedContinuation { continuation in
+            netEaseQueue.async { continuation.resume(returning: work()) }
         }
     }
 
@@ -785,6 +1195,7 @@ private extension MediaPlayerKind {
         switch self {
         case .appleMusic: "Music"
         case .spotify: "Spotify"
+        case .netease: "网易云音乐"
         }
     }
 }

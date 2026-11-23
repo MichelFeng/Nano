@@ -41,13 +41,13 @@ enum NanoPermissionKind: String, CaseIterable, Identifiable, Sendable {
 
     var detail: String {
         switch self {
-        case .accessibility: "Paste dictation, jump to an agent session, and hide macOS banners the island already shows."
+        case .accessibility: "Control NetEase Cloud Music, paste dictation, jump to agent sessions, and hide macOS banners the island shows."
         case .calendar: "Upcoming events from Apple Calendar in the island."
         case .camera: "A private live preview. Nano never records it."
         case .microphone: "Voice dictation while the shortcut is held. Audio stays on this Mac."
         case .location: "Local weather in the island."
         case .bluetooth: "AirPods and accessory connect alerts."
-        case .automation: "Music, Spotify, iMessage replies, and jumping into Cursor or T3 Code."
+        case .automation: "Apple Music, Spotify, iMessage replies, and jumping into Cursor or T3 Code."
         case .fullDisk: "macOS notifications in the island, from iMessage, calls, Mail, and every app."
         case .contacts: "Sender photos on iMessage cards."
         case .screenRecording: "Sketch captures what you mark on the screen."
@@ -146,6 +146,8 @@ final class NanoPermissionMonitor: ObservableObject {
     private func isNeeded(_ kind: NanoPermissionKind) -> Bool {
         let settings = viewModel.settings
         let systemNotifications = settings.isNotificationEnabled(.system)
+        let musicEnabled = settings.isEnabled(.music)
+        let usesNetEase = settings.preferredMediaPlayer == .netease
         switch kind {
         case .accessibility:
             let mediaKeys = settings.hudReplacesSystemHUD
@@ -153,6 +155,7 @@ final class NanoPermissionMonitor: ObservableObject {
             return settings.isEnabled(.voiceDictation)
                 || settings.isEnabled(.agents)
                 || mediaKeys
+                || (musicEnabled && usesNetEase)
                 || (systemNotifications && settings.systemNotificationsHideNativeBanner)
                 || (settings.isEnabled(.cue) && settings.cuePullsSelection)
         case .calendar:
@@ -166,7 +169,7 @@ final class NanoPermissionMonitor: ObservableObject {
         case .bluetooth:
             return settings.isNotificationEnabled(.bluetooth)
         case .automation:
-            return settings.isEnabled(.music)
+            return (musicEnabled && !usesNetEase)
                 || settings.isEnabled(.agents)
                 || (systemNotifications && settings.systemNotificationsInlineReply)
         case .fullDisk:

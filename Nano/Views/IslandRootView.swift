@@ -1752,7 +1752,11 @@ struct DashboardMusicView: View {
     let openModule: () -> Void
 
     var body: some View {
-        expanded
+        if controller.preferredPlayer == .netease {
+            NetEaseTransportPanel(controller: controller, large: true)
+        } else {
+            expanded
+        }
     }
 
     private func playbackTint(_ track: MediaNowPlaying) -> Color {
