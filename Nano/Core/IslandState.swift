@@ -85,6 +85,13 @@ final class IslandViewModel: ObservableObject {
         store.didComplete = { [weak self] in
             self?.announceTimerCompletion()
         }
+        let reconcileCueFocus: ([CueItem]) -> Void = { [weak store] items in
+            store?.reconcileCueCompletion { id in
+                items.contains { $0.id == id && $0.isDone }
+            }
+        }
+        cueStore.onItemsChange = reconcileCueFocus
+        reconcileCueFocus(cueStore.items)
         store.layoutDidChange = { [weak self] in
             self?.objectWillChange.send()
         }
@@ -589,16 +596,17 @@ final class IslandViewModel: ObservableObject {
     /// panel stage also carries a separate camera-housing allowance.
     private var timerHeight: CGFloat {
         let store = timerStore
-        let rows = CGFloat(min(store.tasks.count, Self.maxUnscrolledGoals)) * Self.goalRowHeight
+        let taskCount = store.cue == nil ? store.tasks.count : 0
+        let rows = CGFloat(min(taskCount, Self.maxUnscrolledGoals)) * Self.goalRowHeight
         let goals = store.goalsExpanded ? rows : 0
 
         let height: CGFloat = switch store.state {
         case .idle:
             259 + (store.goalsExpanded ? 35 : 0) + goals
         case .running, .paused:
-            store.tasks.isEmpty ? 226 : 244
+            taskCount == 0 ? 226 : 244
         case .completed:
-            store.mode == .rest ? 170 : (store.tasks.isEmpty ? 216 : 230 + goals)
+            store.mode == .rest ? 170 : (taskCount == 0 ? 216 : 230 + goals)
         }
 
         return min(height, 490)
@@ -1205,6 +1213,25 @@ final class IslandViewModel: ObservableObject {
         openModule(.cue)
     }
 
+    var canStartCueFocus: Bool {
+        settings.isEnabled(.timer) && timerStore.canStartCueFocus
+    }
+
+    func startCueFocus(_ id: UUID) {
+        guard settings.isEnabled(.cue), settings.isEnabled(.timer),
+              let item = cueStore.items.first(where: { $0.id == id }), !item.isDone,
+              timerStore.startCueFocus(FocusCue(id: id, title: item.headline))
+        else { return }
+        openModule(.timer)
+    }
+
+    func completeCueFocus() {
+        guard timerStore.isAwaitingCueDecision, let cue = timerStore.cue else { return }
+        cueStore.setDone(cue.id, true, announce: true)
+        timerStore.endCueFocus()
+        openModule(.cue)
+    }
+
     // MARK: Mixer
 
     private func syncMixerHotkey(isEnabled: Bool) {
@@ -1325,7 +1352,7 @@ final class IslandViewModel: ObservableObject {
         routeNotification(
             .timerCompletion(
                 mode: timerStore.mode,
-                sessionName: timerStore.sessionName,
+                sessionName: timerStore.displayName,
                 configuredDuration: timerStore.configuredDuration
             )
         )

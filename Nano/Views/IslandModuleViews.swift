@@ -20,7 +20,11 @@ struct IslandModuleView: View {
                 case .calendar:
                     CalendarModuleView(service: viewModel.calendarService, settings: settings)
                 case .timer:
-                    TimerModuleView(store: viewModel.timerStore, settings: settings)
+                    TimerModuleView(
+                        store: viewModel.timerStore,
+                        settings: settings,
+                        completeCue: viewModel.completeCueFocus
+                    )
                 case .camera:
                     CameraModuleView(service: viewModel.cameraService)
                 case .weather:
@@ -165,6 +169,7 @@ struct IslandModuleView: View {
 private struct TimerModuleView: View {
     @ObservedObject var store: FocusTimerStore
     @ObservedObject var settings: NanoSettings
+    let completeCue: () -> Void
 
     @State private var isEditingDuration = false
     @State private var durationDraft = ""
@@ -358,7 +363,7 @@ private struct TimerModuleView: View {
                     .foregroundStyle(.white.opacity(0.36))
                     .lineLimit(1)
             }
-        } else if !store.tasks.isEmpty {
+        } else if store.cue == nil, !store.tasks.isEmpty {
             Label("All \(store.tasks.count) goals done", systemImage: "checkmark.square.fill")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundStyle(.orange)
@@ -405,7 +410,7 @@ private struct TimerModuleView: View {
                     .lineLimit(1)
             }
 
-            if !isBreak {
+            if !isBreak, store.cue == nil {
                 if store.tasks.isEmpty {
                     Text("No goals were set for this session.")
                         .font(.system(size: 11))
@@ -426,7 +431,10 @@ private struct TimerModuleView: View {
             Spacer(minLength: 0)
 
             HStack(alignment: .bottom, spacing: 8) {
-                if isBreak {
+                if store.isAwaitingCueDecision {
+                    primaryButton("Complete Cue", action: completeCue)
+                    secondaryButton("Continue 15 Min", action: store.keepGoing)
+                } else if isBreak {
                     primaryButton("Back to It", action: store.backToWork)
                     secondaryButton("Done for Now", action: store.clearSession)
                 } else {
@@ -455,7 +463,7 @@ private struct TimerModuleView: View {
     // MARK: - Shared pieces
 
     private var sessionTitle: String {
-        let trimmed = store.sessionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = store.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? store.mode.title : trimmed
     }
 
