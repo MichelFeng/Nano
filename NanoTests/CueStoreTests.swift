@@ -349,6 +349,69 @@ final class CueStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.cue, cue)
     }
 
+    func testCueFocusUsesTheUsersLengthAndGivesItBack() throws {
+        let suite = "NanoTests.cueLength.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = IslandViewModel(settings: NanoSettings(defaults: defaults), trayStorageURL: nil)
+        let cues = CueStore(directoryURL: directory)
+        model.cueStore = cues
+        let cue = try XCTUnwrap(cues.add(text: "Write notes", scope: .inbox))
+        let timer = model.timerStore
+        timer.setDuration(seconds: 50 * 60)
+
+        XCTAssertEqual(timer.cueFocusLength, 50 * 60)
+        model.startCueFocus(cue.id)
+        XCTAssertEqual(timer.configuredDuration, 50 * 60)
+        timer.finishEarly()
+        timer.keepGoing()
+        XCTAssertEqual(timer.configuredDuration, 65 * 60)
+        timer.finishEarly()
+        model.completeCueFocus()
+
+        XCTAssertEqual(timer.state, .idle)
+        XCTAssertEqual(timer.configuredDuration, 50 * 60)
+        XCTAssertEqual(timer.remaining, 50 * 60)
+    }
+
+    func testNotDoneYetEndsTheSessionAndLeavesTheCueOpen() throws {
+        let suite = "NanoTests.cueLeave.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let model = IslandViewModel(settings: NanoSettings(defaults: defaults), trayStorageURL: nil)
+        let cues = CueStore(directoryURL: directory)
+        model.cueStore = cues
+        let cue = try XCTUnwrap(cues.add(text: "Write notes", scope: .inbox))
+        let timer = model.timerStore
+        timer.setDuration(seconds: 40 * 60)
+
+        model.startCueFocus(cue.id)
+        timer.finishEarly()
+        model.leaveCueFocus()
+
+        XCTAssertEqual(timer.state, .idle)
+        XCTAssertNil(timer.cue)
+        XCTAssertEqual(timer.configuredDuration, 40 * 60)
+        XCTAssertEqual(cues.openItems(in: .inbox).map(\.id), [cue.id])
+        XCTAssertTrue(timer.canStartCueFocus)
+    }
+
+    func testUndoingAResetCueSessionKeepsItsAddedTime() {
+        let timer = FocusTimerStore()
+        timer.setDuration(seconds: 30 * 60)
+        XCTAssertTrue(timer.startCueFocus(FocusCue(id: UUID(), title: "Draft")))
+        timer.finishEarly()
+        timer.keepGoing()
+        timer.pause()
+        timer.reset()
+        XCTAssertEqual(timer.configuredDuration, 30 * 60)
+
+        timer.undoReset()
+        XCTAssertEqual(timer.configuredDuration, 45 * 60)
+        XCTAssertEqual(timer.cue?.title, "Draft")
+        XCTAssertEqual(timer.state, .paused)
+    }
+
     func testCueFocusRespectsTimerAvailabilityAndADeletedCue() throws {
         let suite = "NanoTests.cueAvailability.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))

@@ -23,7 +23,8 @@ struct IslandModuleView: View {
                     TimerModuleView(
                         store: viewModel.timerStore,
                         settings: settings,
-                        completeCue: viewModel.completeCueFocus
+                        completeCue: viewModel.completeCueFocus,
+                        leaveCue: viewModel.leaveCueFocus
                     )
                 case .camera:
                     CameraModuleView(service: viewModel.cameraService)
@@ -170,6 +171,7 @@ private struct TimerModuleView: View {
     @ObservedObject var store: FocusTimerStore
     @ObservedObject var settings: NanoSettings
     let completeCue: () -> Void
+    let leaveCue: () -> Void
 
     @State private var isEditingDuration = false
     @State private var durationDraft = ""
@@ -434,6 +436,7 @@ private struct TimerModuleView: View {
                 if store.isAwaitingCueDecision {
                     primaryButton("Complete Cue", action: completeCue)
                     secondaryButton("Continue 15 Min", action: store.keepGoing)
+                    secondaryButton("Not Done Yet", action: leaveCue)
                 } else if isBreak {
                     primaryButton("Back to It", action: store.backToWork)
                     secondaryButton("Done for Now", action: store.clearSession)

@@ -609,7 +609,7 @@ final class IslandViewModel: ObservableObject {
         case .running, .paused:
             taskCount == 0 ? 226 : 244
         case .completed:
-            store.mode == .rest ? 170 : (taskCount == 0 ? 216 : 230 + goals)
+            store.mode == .rest || store.cue != nil ? 170 : (taskCount == 0 ? 216 : 230 + goals)
         }
 
         return min(height, 490)
@@ -1226,6 +1226,13 @@ final class IslandViewModel: ObservableObject {
               timerStore.startCueFocus(FocusCue(id: id, title: item.headline))
         else { return }
         openModule(.timer)
+    }
+
+    /// The session ended but the Cue isn't done: back to the list, Cue left open.
+    func leaveCueFocus() {
+        guard timerStore.isAwaitingCueDecision else { return }
+        timerStore.endCueFocus()
+        openModule(.cue)
     }
 
     func completeCueFocus() {

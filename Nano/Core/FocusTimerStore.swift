@@ -57,7 +57,7 @@ final class FocusTimerStore: ObservableObject {
         }
     }
     @Published private(set) var remaining: TimeInterval = FocusTimerStore.defaultFocus
-    @Published private var resetUndo: (state: FocusTimerState, remaining: TimeInterval, cue: FocusCue?)?
+    @Published private var resetUndo: (state: FocusTimerState, remaining: TimeInterval, duration: TimeInterval, cue: FocusCue?)?
     private var resetUndoTask: Task<Void, Never>?
     @Published private(set) var configuredDuration: TimeInterval = FocusTimerStore.defaultFocus {
         didSet { save() }
@@ -144,6 +144,12 @@ final class FocusTimerStore: ObservableObject {
 
     var isAwaitingCueDecision: Bool { cue != nil && state == .completed }
 
+    /// A Cue gets the length the user set up, not a fixed one. After a
+    /// session that is the length it started at, before any added time.
+    var cueFocusLength: TimeInterval {
+        state == .idle && mode == .focus ? configuredDuration : focusDuration
+    }
+
     /// Adding time stops at the four-hour limit.
     var canAddTime: Bool {
         configuredDuration < 14_400
@@ -229,7 +235,7 @@ final class FocusTimerStore: ObservableObject {
     @discardableResult
     func startCueFocus(_ cue: FocusCue) -> Bool {
         guard canStartCueFocus else { return false }
-        startFocus(seconds: Self.defaultFocus, cue: cue)
+        startFocus(seconds: cueFocusLength, cue: cue)
         return true
     }
 
@@ -260,6 +266,7 @@ final class FocusTimerStore: ObservableObject {
         startOrResume()
     }
 
+    /// Ends a finished Cue session, whether or not the Cue got done.
     func endCueFocus() {
         guard isAwaitingCueDecision else { return }
         discardResetUndo()
@@ -352,7 +359,7 @@ final class FocusTimerStore: ObservableObject {
     func reset() {
         if state != .idle {
             updateRemaining()
-            resetUndo = (state, remaining, cue)
+            resetUndo = (state, remaining, configuredDuration, cue)
             resetUndoTask?.cancel()
             resetUndoTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(5))
@@ -365,6 +372,9 @@ final class FocusTimerStore: ObservableObject {
 
     private func resetCountdown() {
         stopTicker()
+        // "Continue 15 Min" added time to the Cue's session, not to the
+        // length the user set up.
+        if cue != nil { configuredDuration = focusDuration }
         remaining = configuredDuration
         state = .idle
         endDate = nil
@@ -378,6 +388,7 @@ final class FocusTimerStore: ObservableObject {
     func undoReset() {
         guard canUndoReset, let saved = resetUndo else { return }
         discardResetUndo()
+        configuredDuration = saved.duration
         remaining = saved.remaining
         cue = saved.cue
         if saved.state == .running {
